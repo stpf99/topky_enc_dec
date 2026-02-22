@@ -52,4 +52,3 @@ tom@tom-solus ~/Pobrane $ python toptopuwcodec_v1.py -o 1-video.mp4 -i video_top
 
 ✓ SUKCES! 145 klatek → 1-video.mp4
 tom@tom-solus ~/Pobrane $ `
-'
