@@ -1,4 +1,4 @@
-'tom@tom-solus ~/Pobrane $ python toptopuwcodec_v1.py -i video.mp4 -o video_top1-p1-f.test -1 -f
+`tom@tom-solus ~/Pobrane $ python toptopuwcodec_v1.py -i video.mp4 -o video_top1-p1-f.test -1 -f
 ▶ Preset 1 — MAŁY PLIK: Q_Y=32 Q_C=55
 
 ╔══ TOP TOPÓW CODEC v2 — KODOWANIE ══╗
@@ -51,5 +51,5 @@ tom@tom-solus ~/Pobrane $ python toptopuwcodec_v1.py -o 1-video.mp4 -i video_top
   Zdekodowano klatkę 145/145 [P]
 
 ✓ SUKCES! 145 klatek → 1-video.mp4
-tom@tom-solus ~/Pobrane $ 
+tom@tom-solus ~/Pobrane $ `
 '
