@@ -501,6 +501,42 @@ _NUMBA_INTERP, _NUMBA_INFO = _try_compile_numba()
 
 
 # ═══════════════════════════════════════════════════════════════════════════
+# 10b. OPCJONALNY VLC  (toptopuw_vlc.py — kompaktowanie bitstreamu P/B)
+# ═══════════════════════════════════════════════════════════════════════════
+
+def _try_load_vlc():
+    """
+    Ładuje toptopuw_vlc.py z tego samego katalogu co speedup.
+    VLC podmienia _serialize_blocks/_deserialize_blocks w kodeku,
+    kompaktując współczynniki DCT z int16 (2B) do ~1B przez kodowanie
+    (run_of_zeros, level) — analogicznie do CAVLC w H.264.
+    Zysk: ~15× przed Zstd, ~1.5-2× łącznie vs samo Zstd.
+    """
+    import importlib.util as _ilu
+    from pathlib import Path
+
+    candidates = [
+        Path(__file__).resolve().parent / "toptopuw_vlc.py",
+        Path("toptopuw_vlc.py"),
+        Path.home() / "toptopuw_vlc.py",
+    ]
+    for p in candidates:
+        if not p.exists():
+            continue
+        try:
+            spec = _ilu.spec_from_file_location("toptopuw_vlc", str(p))
+            mod  = _ilu.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            return mod, f"✓ VLC ({p.name})"
+        except Exception as _e:
+            return None, f"✗ VLC błąd: {_e}"
+    return None, "✗ VLC niedostępne (brak toptopuw_vlc.py)"
+
+
+_VLC_MOD, _VLC_INFO = _try_load_vlc()
+
+
+# ═══════════════════════════════════════════════════════════════════════════
 # 10. GŁÓWNA FUNKCJA PATCH — monkey-patchuje załadowany moduł kodeka
 # ═══════════════════════════════════════════════════════════════════════════
 
@@ -535,6 +571,13 @@ def apply(codec_mod) -> object:
     cls._decode_pframe = _decode_pframe_fast
     # B-frame decode wywołuje _decode_pframe wewnętrznie → automatycznie szybszy
 
+    # ── 4. VLC — kompaktowanie bitstreamu P/B przed Zstd ─────────────
+    if _VLC_MOD is not None:
+        try:
+            _VLC_MOD.apply(codec_mod)
+        except Exception as _e:
+            print(f"[speedup] VLC apply błąd: {_e}", flush=True)
+
     return codec_mod
 
 
@@ -549,6 +592,7 @@ def diagnostics() -> str:
         f"  Rdzenie CPU:   {N_CORES} fizycznych",
         f"  DCT backend:   {FFTW_INFO}",
         f"  Interpolacja:  {_NUMBA_INFO}",
+        f"  VLC bitstream: {_VLC_INFO}",
     ]
 
     # Sprawdź czy numpy korzysta z MKL lub OpenBLAS
