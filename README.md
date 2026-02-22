@@ -1,56 +1,38 @@
 
 ```shell
-tom@tom-solus ~/Pobrane $ python toptopuwcodec_v1.py -i video.mp4 -o video_top1-p1-f.test -1 -f
-▶ Preset 1 — MAŁY PLIK: Q_Y=32 Q_C=55
+tom@tom-solus ~ $ python benchmark_vlc.py 
+╔════════════════════════════════════════════════════════════════════╗
+║  BENCHMARK VLC + ZSTD — klatka P 1080p                            ║
+║  120×68 bloków = 8160 total, 2448 DETAIL (30%), Q_Y=22 Q_C=40      ║
+╠════════════════════════════════════════════════════════════════════╣
+║  ─── Rozmiary ───                                                  ║
+║  Raw int16 (v2.7):               1,890,880 B    100%               ║
+║  VLC:                              125,301 B     6.6%  → 15.1× mniej║
+║  Raw + Zstd(22):                   105,236 B     5.6%  → 18.0× mniej║
+║  VLC + Zstd(22):                    77,656 B     4.1%  → 24.3× mniej║
+║  VLC+Zstd vs Zstd:                     1.36×  (26% mniej niż samo Zstd)║
+║  ─── Czasy (ms, średnia {REPS} powtórzeń) ───                      ║
+║  VLC pack:                         295.72 ms                       ║
+║  VLC unpack:                        64.68 ms                       ║
+║  Zstd compress raw:               1037.10 ms                       ║
+║  Zstd compress VLC:                 31.03 ms                       ║
+║  Zstd decomp raw:                    1.05 ms                       ║
+║  Zstd decomp VLC:                    0.15 ms                       ║
+║  ─── Łączny pipeline ───                                           ║
+║  Enkodowanie  raw→Zstd:           1037.10 ms                       ║
+║  Enkodowanie  raw→VLC→Zstd:        326.75 ms  (VLC 295.72 + Zstd 31.03)║
+║  Dekodowanie  Zstd→raw:              1.05 ms                       ║
+║  Dekodowanie  Zstd→VLC→raw:         64.83 ms  (Zstd 0.15 + VLC 64.68)║
+║  ─── Rozkład symboli VLC ───                                       ║
+║  Unikalne bajty:                   242 / 256                       ║
+║    0x02 (0,+1)                          7.8%                       ║
+║    0x03 (0,-1)                          7.7%                       ║
+║    0x09 (1,-1)                          6.5%                       ║
+║    0x08 (1,+1)                          6.5%                       ║
+║    0x00 EOB                             5.6%                       ║
+║    0x0f (2,-1)                          5.3%                       ║
+║    0x0e (2,+1)                          5.3%                       ║
+║    0x01 ESC_RUN                         5.3%                       ║
+║    0x15 (3,-1)                          4.4%                       ║
+║    0x14 (3,+1)                          4.4%                       ║
 
-╔══ TOP TOPÓW CODEC v2 — KODOWANIE ══╗
-  Wejście:     video.mp4
-  Wyjście:     video_top1-p1-f.test
-  Klatki:      WSZYSTKIE
-  Sub-pixel:   ON
-  B-Frames:    ON
-  Zasięg:      ±24px
-  Keyframe co: 50 klatek
-  Q_Y/Q_C:     32/55
-  Scene cut:   próg MAD=35
-╚══════════════════════════════════════╝
-
-[Klatka 1/145] I-Frame...
-[Klatka 2/145] P-Frame...
-   -> SKIP: 1188/1225 (97.0%) | DETAIL: 37 | Sub-pixel: ON
-[Klatka 3/145] P-Frame...
-   -> SKIP: 1167/1225 (95.3%) | DETAIL: 58 | Sub-pixel: ON
-[Klatka 4/145] P-Frame...
-   -> SKIP: 1156/1225 (94.4%) | DETAIL: 69 | Sub-pixel: ON
-[Klatka 5/145] B-Frame (future=6)...
-
-............................................................
-
-[Klatka 141/145] B-Frame (future=142)...
-   -> B-FRAME | SKIP: 1209/1225 (98.7%) | DETAIL: 16
-[Klatka 142/145] P-Frame...
-   -> SKIP: 1204/1225 (98.3%) | DETAIL: 21 | Sub-pixel: ON
-[Klatka 143/145] P-Frame...
-   -> SKIP: 1205/1225 (98.4%) | DETAIL: 20 | Sub-pixel: ON
-[Klatka 144/145] P-Frame...
-   -> SKIP: 1207/1225 (98.5%) | DETAIL: 18 | Sub-pixel: ON
-[Klatka 145/145] P-Frame...
-   -> SKIP: 1205/1225 (98.4%) | DETAIL: 20 | Sub-pixel: ON
-
-✓ Czas: 200.8s | Surowe: 16852KB | Skompresowane: 139KB | Ratio Zstd: 120.4x
-tom@tom-solus ~/Pobrane $ python toptopuwcodec_v1.py -o 1-video.mp4 -i video_top1-p1-f.test -d
-
-╔══ TOP TOPÓW CODEC v2 — DEKODOWANIE ══╗
-  Wejście: video_top1-p1-f.test
-  Wyjście: 1-video.mp4
-╚════════════════════════════════════════╝
-
-  Zdekodowano klatkę 1/145 [I]
-  Zdekodowano klatkę 2/145 [P]
-  Zdekodowano klatkę 3/145 [P]
-  Zdekodowano klatkę 4/145 [P]
-......
-  Zdekodowano klatkę 145/145 [P]
-
-✓ SUKCES! 145 klatek → 1-video.mp4
-tom@tom-solus ~/Pobrane $ 
