@@ -511,7 +511,10 @@ class TopTopowCodecV2:
 
         # Uruchamiamy na wszystkich dostępnych rdzeniach
         results_by_row = {}
-        with concurrent.futures.ProcessPoolExecutor() as executor:
+        # Odczyt limitu z GUI przez zmienną środowiskową (domyślnie użyj wszystkich)
+        max_w = int(os.environ.get("MAX_WORKERS", os.cpu_count()))
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_w) as executor:
             for y_out, row_results in executor.map(process_row_pframe, tasks):
                 results_by_row[y_out] = row_results
 
