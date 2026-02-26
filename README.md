@@ -36,3 +36,12 @@ tom@tom-solus ~ $ python benchmark_vlc.py
 ║    0x15 (3,-1)                          4.4%                       ║
 ║    0x14 (3,+1)                          4.4%                       ║
 
+qdiff_codec.py "qbit style"
+
+
+  Kompresja zstd...
+
+✓ SUKCES!
+  Klatki: 192  |  Raw: 518400 KB
+  Pre-zstd: 162437 KB  |  Po zstd: 5911 KB
+  Kompresja: 87.7× (5911.2 KB)
