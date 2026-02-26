@@ -45,3 +45,15 @@ qdiff_codec.py "qbit style"
   Klatki: 192  |  Raw: 518400 KB
   Pre-zstd: 162437 KB  |  Po zstd: 5911 KB
   Kompresja: 87.7× (5911.2 KB)
+
+qdiff_codec_v0.2_auto.py
+✓ SUKCES!
+  Klatki: 30  |  Raw: 81000 KB
+  Pre-zstd: 18677 KB  |  Po zstd: 285 KB
+  Kompresja: 284.1× (285.1 KB)
+
+  Statystyki AUTO-MODE:
+    Średnie Q_Y: 20.1 (zakres: 12.0-45.0)
+    Średnie Q_C: 40.2 (zakres: 22.0-70.0)
+    Średnia MAD: 2.36
+
