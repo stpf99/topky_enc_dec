@@ -36,8 +36,9 @@ tom@tom-solus ~ $ python benchmark_vlc.py
 ║    0x15 (3,-1)                          4.4%                       ║
 ║    0x14 (3,+1)                          4.4%                       ║
 
-qdiff_codec.py "qbit style"
 
+
+qdiff_codec.py "qbit style" 192 klatki
 
   Kompresja zstd...
 
@@ -46,7 +47,11 @@ qdiff_codec.py "qbit style"
   Pre-zstd: 162437 KB  |  Po zstd: 5911 KB
   Kompresja: 87.7× (5911.2 KB)
 
-qdiff_codec_v0.2_auto.py
+
+qdiff_codec_v0.2_auto.py 30 klatek
+
+  Kompresja zstd...
+
 ✓ SUKCES!
   Klatki: 30  |  Raw: 81000 KB
   Pre-zstd: 18677 KB  |  Po zstd: 285 KB
@@ -54,6 +59,17 @@ qdiff_codec_v0.2_auto.py
 
   Statystyki AUTO-MODE:
     Średnie Q_Y: 20.1 (zakres: 12.0-45.0)
+
+
+qdiff_codec_v0.3_vfr.py 30 klatek
+  Kompresja zstd...
+
+✓ SUKCES!
+  Klatki: 30 (kept: 30, dropped: 0)
+  Raw: 81000 KB
+  Pre-zstd: 18242 KB  |  Po zstd: 283 KB
+  Kompresja: 285.5× (283.7 KB)
+
     Średnie Q_C: 40.2 (zakres: 22.0-70.0)
     Średnia MAD: 2.36
 
