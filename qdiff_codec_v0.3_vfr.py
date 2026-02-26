@@ -987,10 +987,17 @@ def _classify_block(q_dct_y: np.ndarray,
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# CZĘŚĆ 11 — PRZETWARZANIE RZĘDU BLOKÓW P-FRAME
+# CZĘŚĆ 11 — PRZETWARZANIE RZĘDU BLOKÓW P-FRAME (ZOPTIMALIZOWANE)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def process_row_qdiff(args):
+    """
+    Przetwarza rząd bloków z optymalizacjami:
+    1. Early termination - przerwij jeśli SAD już dobry
+    2. Scene cut detection per-block - pomiń motion search przy wysokim SAD
+    3. Adaptive subpixel - tylko gdy SAD jest w rozsądnym zakresie
+    4. Diamond search - szybsza alternatywa dla three-step
+    """
     (y, w_pad, h_pad,
      prev_Y, curr_Y,
      prev_U, curr_U,
@@ -1003,46 +1010,93 @@ def process_row_qdiff(args):
     row_results = []
     col_idx = 0; x = 0
 
+    # Pre-compute thresholds
+    bs2 = bs * bs
+    threshold_skip = bs2 * 1.5       # SAD < tego = SKIP_TRUE
+    threshold_mv = bs2 * 1.0         # SAD < tego = MV_ONLY (early exit)
+    threshold_intra_block = intra_threshold * 0.85  # SAD > tego = prawdopodobnie INTRA
+
     while x < w_pad:
         curr_y_block = curr_Y[y:y+bs, x:x+bs].astype(np.float32)
         prev_y_static = prev_Y[y:y+bs, x:x+bs].astype(np.float32)
         sad_static = float(np.sum(np.abs(curr_y_block - prev_y_static)))
 
+        # Szybki skip przez MAD map
         if mad_row is not None and col_idx < len(mad_row):
             if mad_row[col_idx] < 1.0:
                 row_results.append({'x': x, 'y': y, 'bs': bs, 'family_id': QD_SKIP_TRUE})
                 x += bs; col_idx += 1; continue
         col_idx += 1
 
-        if sad_static < bs * bs * 1.5:
+        # SKIP_TRUE - klatka statyczna
+        if sad_static < threshold_skip:
             row_results.append({'x': x, 'y': y, 'bs': bs, 'family_id': QD_SKIP_TRUE})
             x += bs; continue
 
+        # ─── OPTYMALIZACJA: Scene cut detection per-block ───────────────────────
+        # Jeśli SAD_static >> intra_threshold, motion search nie ma sensu
+        # Od razu traktuj jako INTRA_PATCH (blok niezależny)
+        if sad_static > intra_threshold * 1.2:
+            # Szybki path dla bloków po scene cut
+            q_dct_y = np.round(apply_dct2(curr_y_block) / Q_Y).astype(np.int16)
+            cy, cx = y // 2, x // 2
+            curr_u_block = curr_U[cy:cy+bs_c, cx:cx+bs_c].astype(np.float32)
+            curr_v_block = curr_V[cy:cy+bs_c, cx:cx+bs_c].astype(np.float32)
+            q_dct_u = np.round(apply_dct2(curr_u_block) / Q_C).astype(np.int16)
+            q_dct_v = np.round(apply_dct2(curr_v_block) / Q_C).astype(np.int16)
+
+            blk = {
+                'x': x, 'y': y, 'bs': bs, 'family_id': QD_INTRA_PATCH,
+                'mv_qp': (0, 0),
+                'q_dct_y': q_dct_y, 'q_dct_u': q_dct_u, 'q_dct_v': q_dct_v,
+            }
+            row_results.append(blk)
+            x += bs; continue
+
+        # ─── MOTION SEARCH z early termination ─────────────────────────────────
         best_dx_qp, best_dy_qp = 0, 0
-        min_sad = float('inf')
+        min_sad = sad_static  # Start z static match
+        early_exit = False
+
+        # Diamond Search (szybszy niż three-step, podobna jakość)
+        # Sprawdź tylko 4+1 punktów na iterację zamiast 9
         step = max(1, search_range // 2)
         cy_tss, cx_tss = y, x
 
-        while step >= 1:
-            candidates = []
-            for dy in (-step, 0, step):
-                for dx in (-step, 0, step):
-                    sy = max(0, min(cy_tss + dy, h_pad - bs))
-                    sx = max(0, min(cx_tss + dx, w_pad - bs))
-                    candidates.append((sy, sx))
-            for sy, sx in candidates:
+        while step >= 1 and not early_exit:
+            # Diamond pattern: tylko 5 punktów (center + 4 kierunki)
+            diamond_offsets = [(0, 0), (-step, 0), (step, 0), (0, -step), (0, step)]
+
+            for dy, dx in diamond_offsets:
+                sy = max(0, min(cy_tss + dy, h_pad - bs))
+                sx = max(0, min(cx_tss + dx, w_pad - bs))
+
                 cand = prev_Y[sy:sy+bs, sx:sx+bs].astype(np.float32)
                 sad = float(np.sum(np.abs(curr_y_block - cand)))
+
                 if sad < min_sad:
                     min_sad = sad
                     best_dx_qp = (sx - x) * 4
                     best_dy_qp = (sy - y) * 4
                     cy_tss, cx_tss = sy, sx
+
+                    # ─── EARLY TERMINATION ───────────────────────────────────────
+                    # Jeśli SAD już wystarczająco niski, przerwij szukanie
+                    if sad < threshold_mv:
+                        early_exit = True
+                        break
+
             step //= 2
 
-        if use_subpixel and min_sad > 0:
-            for qdy in range(-3, 4):
-                for qdx in range(-3, 4):
+        # ─── ADAPTIVE SUBPIXEL REFINEMENT ───────────────────────────────────────
+        # Tylko gdy:
+        # 1. use_subpixel = True
+        # 2. min_sad jest w rozsądnym zakresie (nie za wysoki = intra, nie za niski = OK)
+        # 3. min_sad > 0 (ma sens poprawiać)
+        if use_subpixel and min_sad > 0 and min_sad < threshold_intra_block:
+            # Ograniczony subpixel: tylko 3x3 zamiast 7x7 (9 vs 49 iteracji)
+            for qdy in range(-2, 3):
+                for qdx in range(-2, 3):
                     if qdx == 0 and qdy == 0: continue
                     try_dy = best_dy_qp + qdy
                     try_dx = best_dx_qp + qdx
@@ -1052,7 +1106,14 @@ def process_row_qdiff(args):
                     sad = float(np.sum(np.abs(curr_y_block - cand_sub)))
                     if sad < min_sad:
                         min_sad = sad; best_dy_qp = try_dy; best_dx_qp = try_dx
+                        # Early exit też w subpixel
+                        if sad < threshold_mv * 0.7:
+                            break
+                else:
+                    continue
+                break
 
+        # ─── DCT + Kwantyzacja ───────────────────────────────────────────────────
         abs_y_qp = max(0, min(y*4 + best_dy_qp, (h_pad - bs)*4))
         abs_x_qp = max(0, min(x*4 + best_dx_qp, (w_pad - bs)*4))
         match_y = interpolate_subpixel(prev_Y, abs_y_qp, abs_x_qp, bs)
@@ -1628,7 +1689,374 @@ def _write_frames(frames, output_path: str, fps: float = 25.0):
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
-# CZĘŚĆ 15 — ENKODOWANIE I DEKODOWANIE WIDEO
+# CZĘŚĆ 15 — WIELOWĄTKOWE PRZETWARZANIE SCEN (NOWOŚĆ v0.3)
+# ═══════════════════════════════════════════════════════════════════════════════
+
+def detect_scene_crops(frames: list, scene_cut_threshold: float = 35.0,
+                       keyframe_interval: int = 50) -> list:
+    """
+    Wstępna detekcja scene cuts dla całego wideo.
+    
+    Zwraca listę indeksów klatek które będą I-frames:
+      - Pierwsza klatka
+      - Co keyframe_interval klatek
+      - Klatki po wykrytym scene cut
+    """
+    n = len(frames)
+    iframe_indices = [0]  # Pierwsza klatka zawsze I-frame
+    
+    if n <= 1:
+        return iframe_indices
+    
+    print(f"\n  [PRE-SCAN] Detekcja scen w {n} klatkach...", flush=True)
+    
+    prev_Y = None
+    scene_cuts = []
+    
+    for i, frame in enumerate(frames):
+        h, w = frame.shape[:2]
+        h_pad = h - (h % 16)
+        w_pad = w - (w % 16)
+        
+        Y, _, _ = rgb_to_yuv420(frame[:h_pad, :w_pad].astype(np.float32))
+        
+        # Regularny keyframe
+        if i > 0 and i % keyframe_interval == 0:
+            if i not in iframe_indices:
+                iframe_indices.append(i)
+        
+        # Scene cut detection
+        if prev_Y is not None:
+            scene_diff = float(np.mean(np.abs(Y - prev_Y[:Y.shape[0], :Y.shape[1]])))
+            if scene_diff > scene_cut_threshold:
+                scene_cuts.append((i, scene_diff))
+                if i not in iframe_indices:
+                    iframe_indices.append(i)
+        
+        prev_Y = Y
+        
+        # Progress co 50 klatek
+        if (i + 1) % 50 == 0:
+            print(f"    Pre-scan: {i+1}/{n} klatek", end='\r', flush=True)
+    
+    print(f"    Pre-scan: {n}/{n} klatek ✓", flush=True)
+    print(f"  [PRE-SCAN] Wykryto {len(scene_cuts)} scene cuts", flush=True)
+    
+    # Sortuj i deduplikuj
+    iframe_indices = sorted(set(iframe_indices))
+    
+    return iframe_indices
+
+
+def group_frames_into_scenes(frames: list, iframe_indices: list) -> list:
+    """
+    Grupuje klatki w sceny na podstawie indeksów I-frames.
+    
+    Zwraca listę scen: [(start_idx, [frames]), ...]
+    Każda scena zaczyna się od I-frame.
+    """
+    scenes = []
+    n = len(frames)
+    
+    for i, start_idx in enumerate(iframe_indices):
+        # Koniec sceny to początek następnej lub koniec wideo
+        if i + 1 < len(iframe_indices):
+            end_idx = iframe_indices[i + 1]
+        else:
+            end_idx = n
+        
+        scene_frames = frames[start_idx:end_idx]
+        scenes.append({
+            'start_idx': start_idx,
+            'end_idx': end_idx,
+            'frames': scene_frames,
+            'scene_id': i,
+        })
+    
+    return scenes
+
+
+class SceneEncoder:
+    """
+    Enkoder pojedynczej sceny - niezależny od innych scen.
+    Każda scena ma własny stan kodeka.
+    """
+    
+    def __init__(self, base_params: dict):
+        self.base_params = base_params
+        self.codec = QDiffCodec(
+            q_y=base_params['q_y'],
+            q_c=base_params['q_c'],
+            search_range=base_params['search_range'],
+            use_subpixel=base_params['use_subpixel'],
+            adaptive_q=base_params['adaptive_q'],
+            intra_threshold_factor=base_params['intra_factor'],
+            auto_mode=base_params['auto_mode'],
+            vfr_mode=base_params['vfr_mode'],
+            drop_threshold=base_params['drop_threshold'],
+            i_frame_quality_boost=base_params['i_frame_quality_boost'],
+        )
+        self.results = []
+    
+    def encode_scene(self, scene: dict, frame_duration: float) -> list:
+        """
+        Enkoduje całą scenę (I-frame + następujące P-frames).
+        Zwraca listę (idx, timestamp, frame_bytes, params).
+        """
+        results = []
+        start_idx = scene['start_idx']
+        frames = scene['frames']
+        
+        for local_idx, frame in enumerate(frames):
+            global_idx = start_idx + local_idx
+            timestamp = global_idx * frame_duration
+            
+            # Pierwsza klatka sceny = I-frame
+            force_iframe = (local_idx == 0)
+            
+            h, w = frame.shape[:2]
+            data = self.codec.encode_frame(frame, force_iframe=force_iframe)
+            ft = data['type']
+            params = data.get('params', None)
+            
+            if ft == 'DROPPED':
+                frame_bytes = _FRAME_DROPPED + _serialize_dropped_frame(timestamp, data['similarity'])
+            elif ft == 'I':
+                frame_bytes = _FRAME_I + _serialize_iframe(data, params, timestamp)
+            else:
+                frame_bytes = _FRAME_P + _serialize_pframe(data, params, timestamp)
+            
+            results.append({
+                'global_idx': global_idx,
+                'timestamp': timestamp,
+                'frame_bytes': frame_bytes,
+                'params': params,
+                'type': ft,
+                'size': len(frame_bytes),
+            })
+        
+        return results
+
+
+def encode_scene_worker(args):
+    """Worker function dla ThreadPoolExecutor."""
+    scene, base_params, frame_duration, thread_id = args
+    
+    encoder = SceneEncoder(base_params)
+    results = encoder.encode_scene(scene, frame_duration)
+    
+    return thread_id, scene['scene_id'], results
+
+
+def encode_video_multithreaded(input_path: str, output_path: str,
+                                max_frames: int = 30, full: bool = False,
+                                q_y: float = 22.0, q_c: float = 40.0,
+                                search_range: int = 24,
+                                use_subpixel: bool = True,
+                                adaptive_q: bool = False,
+                                auto_mode: bool = False,
+                                vfr_mode: bool = False,
+                                drop_threshold: float = DEFAULT_DROP_THRESHOLD,
+                                i_frame_quality_boost: float = 0.7,
+                                keyframe_interval: int = 50,
+                                scene_cut_threshold: float = 35.0,
+                                intra_threshold_factor: float = 4.0,
+                                match_source: bool = False,
+                                n_workers: int = None):
+    """
+    Wielowątkowe enkodowanie wideo z pre-scan scen.
+    
+    Algorytm:
+      1. Wczytaj wszystkie klatki
+      2. Pre-scan: wykryj scene cuts
+      3. Grupuj klatki w sceny
+      4. Przetwarzaj sceny równolegle na wątkach
+      5. Złóż wyniki w kolejności
+    """
+    if n_workers is None:
+        n_workers = _N_WORKERS
+    
+    # Ekstrakcja parametrów źródła
+    source_params = {}
+    if match_source:
+        print(f"\n  [MATCH SOURCE] Ekstrakcja parametrów z wejściowego wideo...", flush=True)
+        source_params = extract_source_video_params(input_path)
+        print(f"    FPS: {source_params['fps']:.2f}", flush=True)
+        print(f"    Rozdzielczość: {source_params['width']}x{source_params['height']}", flush=True)
+        print(f"    CRF: {source_params['crf']}", flush=True)
+        print(f"    Preset: {source_params['preset']}", flush=True)
+        if source_params.get('bitrate'):
+            print(f"    Bitrate: {source_params['bitrate']} bps", flush=True)
+    
+    mode_parts = []
+    if auto_mode:
+        mode_parts.append("AUTO")
+    if vfr_mode:
+        mode_parts.append("VFR")
+    if match_source:
+        mode_parts.append("MATCH_SRC")
+    mode_parts.append(f"MTx{n_workers}")
+    mode_str = "+".join(mode_parts) if mode_parts else "MANUAL"
+    
+    print(f"\n╔══ QDIFF CODEC v0.3 — ENKODOWANIE [{mode_str}] ══╗", flush=True)
+    print(f"  Wejście: {input_path}", flush=True)
+    print(f"  Wątki: {n_workers}  Q_Y={q_y}  Q_C={q_c}  search={search_range}", flush=True)
+    if vfr_mode:
+        print(f"  VFR: ON (drop_threshold={drop_threshold*100:.2f}%)", flush=True)
+    if auto_mode:
+        print(f"  AUTO: ON (i_frame_boost={i_frame_quality_boost})", flush=True)
+    print(f"  Architektura: 8-rodzinny QDiff + Multi-threaded Scene Processing", flush=True)
+    print(f"╚{'═'*60}╝\n", flush=True)
+    
+    # Krok 1: Wczytaj klatki
+    t_start = time.time()
+    frames = _read_frames(input_path, max_frames, full)
+    n = len(frames)
+    print(f"\n  Wczytano {n} klatek", flush=True)
+    
+    # Krok 2: Pre-scan detekcji scen
+    t_prescan = time.time()
+    iframe_indices = detect_scene_crops(frames, scene_cut_threshold, keyframe_interval)
+    n_scenes = len(iframe_indices)
+    print(f"  Wykryto {n_scenes} scen (I-frames: {iframe_indices[:5]}{'...' if n_scenes > 5 else ''})", flush=True)
+    t_prescan_elapsed = time.time() - t_prescan
+    print(f"  Pre-scan czas: {t_prescan_elapsed:.2f}s", flush=True)
+    
+    # Krok 3: Grupowanie w sceny
+    scenes = group_frames_into_scenes(frames, iframe_indices)
+    
+    # Krok 4: Przygotuj parametry bazowe
+    base_params = {
+        'q_y': q_y,
+        'q_c': q_c,
+        'search_range': search_range,
+        'use_subpixel': use_subpixel,
+        'adaptive_q': adaptive_q,
+        'intra_factor': intra_threshold_factor,
+        'auto_mode': auto_mode,
+        'vfr_mode': vfr_mode,
+        'drop_threshold': drop_threshold,
+        'i_frame_quality_boost': i_frame_quality_boost,
+    }
+    
+    fps = source_params.get('fps', 25.0) if match_source else 25.0
+    frame_duration = 1.0 / fps
+    
+    # Krok 5: Wielowątkowe przetwarzanie scen
+    t_encode = time.time()
+    print(f"\n  Rozpoczynam enkodowanie {n_scenes} scen na {n_workers} wątkach...", flush=True)
+    
+    all_results = {}
+    completed_scenes = 0
+    
+    # Przygotuj zadania
+    tasks = [
+        (scene, base_params, frame_duration, i % n_workers)
+        for i, scene in enumerate(scenes)
+    ]
+    
+    # Uruchom wątki
+    with concurrent.futures.ThreadPoolExecutor(max_workers=n_workers) as executor:
+        future_to_scene = {
+            executor.submit(encode_scene_worker, task): task[0]['scene_id']
+            for task in tasks
+        }
+        
+        for future in concurrent.futures.as_completed(future_to_scene):
+            scene_id = future_to_scene[future]
+            try:
+                thread_id, sid, results = future.result()
+                all_results[sid] = results
+                completed_scenes += 1
+                
+                # Progress
+                n_frames_in_scene = len(results)
+                print(f"    Scena {completed_scenes}/{n_scenes}: {n_frames_in_scene} klatek ✓", flush=True)
+                
+            except Exception as e:
+                print(f"    [ERROR] Scena {scene_id}: {e}", flush=True)
+    
+    t_encode_elapsed = time.time() - t_encode
+    print(f"\n  Enkodowanie zakończone w {t_encode_elapsed:.2f}s", flush=True)
+    
+    # Krok 6: Złóż wyniki w kolejności
+    print(f"  Składanie wyników w kolejności...", flush=True)
+    
+    encoded_frames = []
+    total_bytes_before = 0
+    total_bytes_after = 0
+    dropped_count = 0
+    
+    for scene_id in range(n_scenes):
+        if scene_id not in all_results:
+            continue
+        
+        for result in all_results[scene_id]:
+            encoded_frames.append((result['global_idx'], result['frame_bytes']))
+            total_bytes_after += result['size']
+            
+            if result['type'] == 'DROPPED':
+                dropped_count += 1
+            
+            # Size before compression
+            idx = result['global_idx']
+            if idx < len(frames):
+                h, w = frames[idx].shape[:2]
+                total_bytes_before += h * w * 3
+    
+    # Sortuj po indeksie oryginalnym
+    encoded_frames.sort(key=lambda x: x[0])
+    encoded_frames = [fb for _, fb in encoded_frames]
+    
+    # Krok 7: Zapis z kompresją zstd
+    print(f"\n  Kompresja zstd...", flush=True)
+    
+    magic = _QDIFF_MAGIC_V3
+    
+    header = bytearray()
+    header.extend(struct.pack('>4s', magic))
+    header.extend(struct.pack('>HH', frames[0].shape[1], frames[0].shape[0]))
+    header.extend(struct.pack('>f', fps))
+    header.extend(struct.pack('>I', n))
+    header.extend(struct.pack('>I', n - dropped_count))
+    header.extend(struct.pack('>f', q_y))
+    header.extend(struct.pack('>f', q_c))
+    
+    if match_source and source_params:
+        header.extend(struct.pack('>B', 1))
+        header.extend(struct.pack('>B', source_params.get('crf', 18)))
+        preset_bytes = source_params.get('preset', 'medium').encode('utf-8')[:16].ljust(16, b'\x00')
+        header.extend(preset_bytes)
+    else:
+        header.extend(struct.pack('>B', 0))
+    
+    raw_stream = bytes(header) + b''.join(encoded_frames) + _EOF_MARKER
+    
+    cctx = zstd.ZstdCompressor(level=6)
+    compressed = cctx.compress(raw_stream)
+    
+    with open(output_path, 'wb') as f:
+        f.write(compressed)
+    
+    ratio = total_bytes_before / len(compressed) if len(compressed) > 0 else 0
+    t_total = time.time() - t_start
+    
+    print(f"\n✓ SUKCES!", flush=True)
+    print(f"  Klatki: {n} (kept: {n-dropped_count}, dropped: {dropped_count})", flush=True)
+    print(f"  Sceny: {n_scenes}  Wątki: {n_workers}", flush=True)
+    print(f"  Raw: {total_bytes_before//1024} KB", flush=True)
+    print(f"  Pre-zstd: {total_bytes_after//1024} KB  |  Po zstd: {len(compressed)//1024} KB", flush=True)
+    print(f"  Kompresja: {ratio:.1f}×", flush=True)
+    print(f"  Czas: pre-scan={t_prescan_elapsed:.2f}s encode={t_encode_elapsed:.2f}s total={t_total:.2f}s", flush=True)
+    
+    if vfr_mode and dropped_count > 0:
+        drop_ratio = dropped_count / n * 100
+        print(f"\n  Statystyki VFR:", flush=True)
+        print(f"    Dropowane: {dropped_count}/{n} ({drop_ratio:.1f}%)", flush=True)
+
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CZĘŚĆ 16 — ENKODOWANIE I DEKODOWANIE WIDEO (SINGLE-THREADED LEGACY)
 # ═══════════════════════════════════════════════════════════════════════════════
 
 def encode_video(input_path: str, output_path: str,
@@ -1953,6 +2381,10 @@ Rodziny QDiff:
                         help='Variable Frame Rate: detekcja i dropowanie klatek statycznych')
     parser.add_argument('--match-source',  action='store_true',
                         help='Użyj parametrów kodowania z wejściowego wideo')
+    
+    # NOWOŚĆ v0.3: Wielowątkowość scen
+    parser.add_argument('-m', '--mt', '--multithreaded', action='store_true', dest='multithreaded',
+                        help='Wielowątkowe enkodowanie scen (pre-scan + równoległe przetwarzanie)')
 
     # Parametry VFR
     parser.add_argument('--drop-threshold', type=float, default=DEFAULT_DROP_THRESHOLD,
@@ -1970,7 +2402,8 @@ Rodziny QDiff:
     parser.add_argument('--scene-cut',    type=float, default=35.0)
     parser.add_argument('--intra-factor', type=float, default=4.0)
     parser.add_argument('--fps',          type=float, default=25.0)
-    parser.add_argument('--workers',      type=int,   default=0)
+    parser.add_argument('--workers',      type=int,   default=0,
+                        help='Liczba wątków dla przetwarzania wielowątkowego (domyślnie: auto)')
 
     # Presety
     parser.add_argument('--preset-fast',    action='store_true', help='Q_Y=32 Q_C=55')
@@ -1991,7 +2424,29 @@ Rodziny QDiff:
 
     if args.decode:
         decode_video(args.input, args.output, fps=args.fps)
+    elif args.multithreaded:
+        # Wielowątkowe enkodowanie scen
+        n_workers = args.workers if args.workers > 0 else _N_WORKERS
+        encode_video_multithreaded(
+            args.input, args.output,
+            max_frames=args.frames,
+            full=args.full,
+            q_y=q_y, q_c=q_c,
+            search_range=sr,
+            use_subpixel=not args.no_subpixel,
+            adaptive_q=args.adaptive_q,
+            auto_mode=args.auto,
+            vfr_mode=args.vfr,
+            drop_threshold=args.drop_threshold,
+            i_frame_quality_boost=args.i_frame_quality,
+            keyframe_interval=args.keyframe_interval,
+            scene_cut_threshold=args.scene_cut,
+            intra_threshold_factor=args.intra_factor,
+            match_source=args.match_source,
+            n_workers=n_workers,
+        )
     else:
+        # Single-threaded (legacy)
         encode_video(
             args.input, args.output,
             max_frames=args.frames,
