@@ -36,40 +36,28 @@ tom@tom-solus ~ $ python benchmark_vlc.py
 ║    0x15 (3,-1)                          4.4%                       ║
 ║    0x14 (3,+1)                          4.4%                       ║
 
+$ python qdiff_codec_v0.7.py -i video-in.mp4 -o out.qdiff -f -a
+[qdiff v0.7] DCT: scipy.fftpack
+[qdiff v0.7] Interpolacja: numba JIT
+[qdiff v0.7] Wątki: 24
+[qdiff v0.7] Zstd level: 19
 
+╔══ QDIFF CODEC v0.7 — ENKODOWANIE ══╗
+  Wejście: video-in.mp4
+  Q_Y=22.0  Q_C=40.0  search=32  keyframe_interval=100
+  Auto-mode: True  VFR: False  DeltaMV: True
+  Zstd level: 19
+╚════════════════════════════════════════╝
 
-qdiff_codec.py "qbit style" 192 klatki
-
-  Kompresja zstd...
-
-✓ SUKCES!
-  Klatki: 192  |  Raw: 518400 KB
-  Pre-zstd: 162437 KB  |  Po zstd: 5911 KB
-  Kompresja: 87.7× (5911.2 KB)
-
-
-qdiff_codec_v0.2_auto.py 30 klatek
-
-  Kompresja zstd...
-
-✓ SUKCES!
-  Klatki: 30  |  Raw: 81000 KB
-  Pre-zstd: 18677 KB  |  Po zstd: 285 KB
-  Kompresja: 284.1× (285.1 KB)
-
-  Statystyki AUTO-MODE:
-    Średnie Q_Y: 20.1 (zakres: 12.0-45.0)
-
-
-qdiff_codec_v0.3_vfr.py 30 klatek
-  Kompresja zstd...
+  Źródło: 560x560 @ 24.00fps
+  Wczytano klatkę 1/145
+...>
+  Kompresja zstd level 19...
 
 ✓ SUKCES!
-  Klatki: 30 (kept: 30, dropped: 0)
-  Raw: 81000 KB
-  Pre-zstd: 18242 KB  |  Po zstd: 283 KB
-  Kompresja: 285.5× (283.7 KB)
+  Klatki: 145  |  VFR dropped: 0
+  Raw: 133218 KB
+  Pre-zstd: 961 KB  |  Po zstd: 172 KB
+  Kompresja: 772.0×
 
-    Średnie Q_C: 40.2 (zakres: 22.0-70.0)
-    Średnia MAD: 2.36
 
